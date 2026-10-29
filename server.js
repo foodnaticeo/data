@@ -144,6 +144,21 @@ async function adminOnly(req, res, next) {
   }
 }
 
+// RESTAURANT PARTNER AUTH: verified Supabase Auth access token.
+// A mobile number saved in localStorage is NOT authentication.
+async function partnerOnly(req, res, next) {
+  try {
+    const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "");
+    if (!match) return res.status(401).json({ success: false, message: "Verified partner login required" });
+    const { data, error } = await supabase.auth.getUser(match[1]);
+    if (error || !data?.user) return res.status(401).json({ success: false, message: "Invalid or expired partner session" });
+    req.partnerUser = data.user;
+    next();
+  } catch (error) {
+    return serverError(res, error, "Partner authentication failed");
+  }
+}
+
 // HOME / HEALTH CHECK
 app.get("/", (req, res) => {
   res.json({
@@ -155,7 +170,7 @@ app.get("/", (req, res) => {
 });
 
 // CREATE RESTAURANT APPLICATION
-app.post("/api/restaurant/apply", async (req, res) => {
+app.post("/api/restaurant/apply", partnerOnly, async (req, res) => {
   try {
     const b = req.body || {};
 
@@ -183,6 +198,15 @@ app.post("/api/restaurant/apply", async (req, res) => {
       });
     }
 
+    // Bind application to the verified account, never an arbitrary phone number.
+    const verifiedPhone = (req.partnerUser.phone || "").replace(/\D/g, "").slice(-10);
+    if (!verifiedPhone || verifiedPhone !== mobile_number.replace(/\D/g, "").slice(-10)) {
+      return res.status(403).json({ success: false, message: "Mobile number does not match verified login" });
+    }
+    if (!Array.isArray(b.food_menu_images) || b.food_menu_images.length > 5 ||
+        b.food_menu_images.some(p => typeof p !== "string" || !/^uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(p))) {
+      return res.status(400).json({ success: false, message: "Maximum five valid uploaded menu images allowed" });
+    }
     const payload = {
       restaurant_name,
 
@@ -197,7 +221,7 @@ app.post("/api/restaurant/apply", async (req, res) => {
         Array.isArray(b.food_menu_images)
           ? b.food_menu_images
               .filter(x => typeof x === "string")
-              .slice(0, 20)
+              .slice(0, 5)
           : [],
 
       fssai_number: cleanText(
@@ -486,7 +510,7 @@ const upload = multer({
 // UPLOAD RESTAURANT DOCUMENT
 app.post(
   "/api/restaurant/upload",
-  adminOnly,
+  partnerOnly,
   upload.single("file"),
   async (req, res) => {
     try {
@@ -500,6 +524,10 @@ app.post(
       const extension =
         mimeToExt[req.file.mimetype];
 
+      // Menu image uploads only; private files are stored by path, not public URL.
+      if (!req.file.mimetype.startsWith("image/")) {
+        return res.status(400).json({ success: false, message: "Menu images only" });
+      }
       const path =
         `uploads/${crypto.randomUUID()}.${extension}`;
 
