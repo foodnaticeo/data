@@ -168,6 +168,16 @@ app.get("/", (req, res) => {
   });
 });
 
+// Convert an uploaded image path into its public Supabase Storage URL.
+// Only URLs for this project's restaurant-applications bucket are accepted.
+const publicImagePrefix = `${process.env.SUPABASE_URL.replace(/\/$/, "")}/storage/v1/object/public/${BUCKET}/`;
+function imagePublicUrl(value) {
+  if (typeof value !== "string") return null;
+  const path = value.startsWith(publicImagePrefix) ? value.slice(publicImagePrefix.length) : value;
+  if (!/^uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(path)) return null;
+  return publicImagePrefix + path;
+}
+
 // CREATE RESTAURANT APPLICATION
 app.post("/api/restaurant/apply", async (req, res) => {
   try {
@@ -198,7 +208,7 @@ app.post("/api/restaurant/apply", async (req, res) => {
     }
 
     if (!Array.isArray(b.food_menu_images) || b.food_menu_images.length > 5 ||
-        b.food_menu_images.some(p => typeof p !== "string" || !/^uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(p))) {
+        b.food_menu_images.some(p => !imagePublicUrl(p))) {
       return res.status(400).json({ success: false, message: "Maximum five valid uploaded menu images allowed" });
     }
     const payload = {
@@ -214,7 +224,7 @@ app.post("/api/restaurant/apply", async (req, res) => {
       food_menu_images:
         Array.isArray(b.food_menu_images)
           ? b.food_menu_images
-              .filter(x => typeof x === "string")
+              .map(imagePublicUrl)
               .slice(0, 5)
           : [],
 
@@ -540,11 +550,13 @@ app.post(
         });
       }
 
+      const { data: publicData } = supabase.storage.from(BUCKET).getPublicUrl(path);
       return res.status(201).json({
         success: true,
         message: "File uploaded successfully",
         bucket: BUCKET,
-        path
+        path,
+        url: publicData.publicUrl
       });
 
     } catch (error) {
