@@ -7,6 +7,12 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 const crypto = require("crypto");
+const admin = require("firebase-admin");
+
+// Firebase Admin uses FIREBASE_SERVICE_ACCOUNT_JSON on Render.
+if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+if (!admin.apps.length) admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 
 const {
   createClient
@@ -144,20 +150,32 @@ async function adminOnly(req, res, next) {
   }
 }
 
-// RESTAURANT PARTNER AUTH: verified Supabase Auth access token.
-// A mobile number saved in localStorage is NOT authentication.
+// Firebase Phone Auth ID token required for partner actions.
 async function partnerOnly(req, res, next) {
   try {
     const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "");
-    if (!match) return res.status(401).json({ success: false, message: "Verified partner login required" });
-    const { data, error } = await supabase.auth.getUser(match[1]);
-    if (error || !data?.user) return res.status(401).json({ success: false, message: "Invalid or expired partner session" });
-    req.partnerUser = data.user;
+    if (!match) return res.status(401).json({ success:false, message:"Partner login required" });
+    const decoded = await admin.auth().verifyIdToken(match[1], true);
+    const phone = decoded.phone_number || "";
+    if (!/^\+91[6-9]\d{9}$/.test(phone)) return res.status(403).json({success:false,message:"Verified Indian mobile number required"});
+    req.partnerUser = { uid: decoded.uid, phone, mobile:phone.slice(3) };
     next();
   } catch (error) {
-    return serverError(res, error, "Partner authentication failed");
+    console.warn("Partner token rejected:", error.code || error.message);
+    return res.status(401).json({success:false,message:"Invalid or expired partner login"});
   }
 }
+
+// Public Firebase web configuration (not service account credentials).
+app.get("/firebase-config", (req,res) => {
+  if (!process.env.FIREBASE_WEB_CONFIG_JSON) return res.status(503).json({success:false,message:"Firebase web config not configured"});
+  try {
+    const c = JSON.parse(process.env.FIREBASE_WEB_CONFIG_JSON);
+    const {apiKey,authDomain,projectId,appId,messagingSenderId,storageBucket} = c;
+    if (!apiKey || !authDomain || !projectId || !appId) throw new Error("Missing Firebase web config fields");
+    res.json({apiKey,authDomain,projectId,appId,messagingSenderId,storageBucket});
+  } catch(e) { res.status(500).json({success:false,message:"Invalid Firebase web configuration"}); }
+});
 
 // HOME / HEALTH CHECK
 app.get("/", (req, res) => {
@@ -183,6 +201,9 @@ app.post("/api/restaurant/apply", partnerOnly, async (req, res) => {
       b.mobile_number,
       20
     );
+    if (mobile_number !== req.partnerUser.mobile) {
+      return res.status(403).json({success:false,message:"Application mobile must match verified login"});
+    }
 
     if (!restaurant_name || !mobile_number) {
       return res.status(400).json({
