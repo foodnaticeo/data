@@ -257,14 +257,16 @@ app.post("/api/restaurant/apply", async (req, res) => {
         "id,restaurant_name,application_status,created_at"
       )
       .single();
+if (error) {
+  console.error("SUPABASE STORAGE ERROR:", error);
 
-    if (error) {
-      return serverError(
-        res,
-        error,
-        "Application submission failed"
-      );
-    }
+  return res.status(500).json({
+    success: false,
+    message: "File upload failed",
+    error: error.message,
+    code: error.statusCode || error.code || null
+  });
+}
 
     return res.status(201).json({
       success: true,
