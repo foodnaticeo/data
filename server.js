@@ -211,6 +211,11 @@ app.post("/api/restaurant/apply", async (req, res) => {
         b.food_menu_images.some(p => !imagePublicUrl(p))) {
       return res.status(400).json({ success: false, message: "Maximum five valid uploaded menu images allowed" });
     }
+    const restaurantImageInput = b.restaurant_image_url || cleanObject(b.restaurant_details).restaurant_image_url;
+    if (restaurantImageInput && !imagePublicUrl(restaurantImageInput)) {
+      return res.status(400).json({ success: false, message: "Invalid restaurant image URL" });
+    }
+
     const payload = {
       restaurant_name,
 
@@ -227,6 +232,12 @@ app.post("/api/restaurant/apply", async (req, res) => {
               .map(imagePublicUrl)
               .slice(0, 5)
           : [],
+
+      // Store the single restaurant photo in the same application row.
+      // Accept either the new top-level field or the older nested field.
+      restaurant_image_url: imagePublicUrl(
+        b.restaurant_image_url || cleanObject(b.restaurant_details).restaurant_image_url
+      ),
 
       fssai_number: cleanText(
         b.fssai_number,
