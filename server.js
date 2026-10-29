@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -7,12 +6,8 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 const crypto = require("crypto");
-const admin = require("firebase-admin");
+// Firebase Phone OTP is handled by the separate login backend.
 
-// Firebase Admin uses FIREBASE_SERVICE_ACCOUNT_JSON on Render.
-if (!process.env.FIREBASE_SERVICE_ACCOUNT_JSON) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-if (!admin.apps.length) admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 
 const {
   createClient
@@ -150,23 +145,9 @@ async function adminOnly(req, res, next) {
   }
 }
 
-// Firebase Phone Auth ID token required for partner actions.
-async function partnerOnly(req, res, next) {
-  try {
-    const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "");
-    if (!match) return res.status(401).json({ success:false, message:"Partner login required" });
-    const decoded = await admin.auth().verifyIdToken(match[1], true);
-    const phone = decoded.phone_number || "";
-    if (!/^\+91[6-9]\d{9}$/.test(phone)) return res.status(403).json({success:false,message:"Verified Indian mobile number required"});
-    req.partnerUser = { uid: decoded.uid, phone, mobile:phone.slice(3) };
-    next();
-  } catch (error) {
-    console.warn("Partner token rejected:", error.code || error.message);
-    return res.status(401).json({success:false,message:"Invalid or expired partner login"});
-  }
-}
+// Partner applications and uploads do not require a second OTP token check.
 
-// Public Firebase web configuration (not service account credentials).
+// Public Firebase web configuration (optional; OTP backend is separate).
 app.get("/firebase-config", (req,res) => {
   if (!process.env.FIREBASE_WEB_CONFIG_JSON) return res.status(503).json({success:false,message:"Firebase web config not configured"});
   try {
@@ -188,7 +169,7 @@ app.get("/", (req, res) => {
 });
 
 // CREATE RESTAURANT APPLICATION
-app.post("/api/restaurant/apply", partnerOnly, async (req, res) => {
+app.post("/api/restaurant/apply", async (req, res) => {
   try {
     const b = req.body || {};
 
@@ -201,9 +182,6 @@ app.post("/api/restaurant/apply", partnerOnly, async (req, res) => {
       b.mobile_number,
       20
     );
-    if (mobile_number !== req.partnerUser.mobile) {
-      return res.status(403).json({success:false,message:"Application mobile must match verified login"});
-    }
 
     if (!restaurant_name || !mobile_number) {
       return res.status(400).json({
@@ -219,11 +197,6 @@ app.post("/api/restaurant/apply", partnerOnly, async (req, res) => {
       });
     }
 
-    // Bind application to the verified account, never an arbitrary phone number.
-    const verifiedPhone = (req.partnerUser.phone || "").replace(/\D/g, "").slice(-10);
-    if (!verifiedPhone || verifiedPhone !== mobile_number.replace(/\D/g, "").slice(-10)) {
-      return res.status(403).json({ success: false, message: "Mobile number does not match verified login" });
-    }
     if (!Array.isArray(b.food_menu_images) || b.food_menu_images.length > 5 ||
         b.food_menu_images.some(p => typeof p !== "string" || !/^uploads\/[a-f0-9-]+\.(jpg|png|webp)$/.test(p))) {
       return res.status(400).json({ success: false, message: "Maximum five valid uploaded menu images allowed" });
@@ -531,7 +504,6 @@ const upload = multer({
 // UPLOAD RESTAURANT DOCUMENT
 app.post(
   "/api/restaurant/upload",
-  partnerOnly,
   upload.single("file"),
   async (req, res) => {
     try {
